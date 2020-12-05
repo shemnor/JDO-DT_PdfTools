@@ -1,14 +1,9 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.ComponentModel;
-using System.Data;
-using System.Drawing;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
-using System.Windows.Forms;
 using System.IO;
+using System.Drawing;
 using System.Threading;
+using System.Windows.Forms;
+using System.ComponentModel;
 using static PdfParser.PdfParser;
 
 namespace JDO_DT_PdfTools
@@ -26,9 +21,11 @@ namespace JDO_DT_PdfTools
         //STANDARD ERROR MESSAGES
         private static class ErrorMessages
         {
-            public static String changingColors { get { return "An error occured when changing colors. It wont be possible to use the {0} drawing and it will be skipped. \n Would you like to resume the process for the remaining drawings?"; } }
-            public static String addingRevisionBlock { get { return "An error occured when adding the revision title block. \n Would you like to resume the process for the remaining drawings?"; } }
-            public static String fileNotFound { get { return "Drawing you want to edit was not found. \n Would you like to resume the process for the remaining drawings?"; } }
+            public static String changingColors { get { return "An error occured when changing colors. It wont be possible to use the {0} drawing and it will be skipped. \nWould you like to resume the process for the remaining drawings?"; } }
+            public static String addingRevisionBlock { get { return "An error occured when adding the revision title block. \nWould you like to resume the process for the remaining drawings?"; } }
+            public static String fileNotFound { get { return "Drawing you want to edit was not found. \nWould you like to resume the process for the remaining drawings?"; } }
+            public static String noFilesSelected { get { return "File selection was lost. \nPlease re-select the files you wish to edit"; } }
+            public static String processRunning { get { return "Editing in progress. \nPlease wait for the previous edit request to finish."; } }
         }
 
         //BUTTONS
@@ -55,10 +52,10 @@ namespace JDO_DT_PdfTools
         private void btn_modify_Click(object sender, EventArgs e)
         {
             //if already running exit
-            if (modifyPdfs.IsBusy) { return; }
-            
+            if (modifyPdfs.IsBusy) { MessageBox.Show(String.Format(ErrorMessages.processRunning, ""), "Error", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
+
             //if not files selected exit
-            if(files == null) { return; }
+            if (files == null){ MessageBox.Show(String.Format(ErrorMessages.noFilesSelected, ""), "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);return; }
 
             //setup progressbar
             _setupProgressbar();
@@ -75,54 +72,66 @@ namespace JDO_DT_PdfTools
             for (int i = 0; i < files.Length; i++)
             {
                 //increment progress
-                worker.ReportProgress((i+1) * (100 / files.Length));
+                worker.ReportProgress((i+1) * (100 / files.Length)-1);
 
-                //get source drawing path
-                if (!File.Exists(files[i]))
+                //get source drawing path if exists, otherwise skip file
+                string sourcePath = "";
+                if (File.Exists(files[i]))
+                {
+                    sourcePath = files[i];
+                }
+                else
                 {
                     DialogResult result = MessageBox.Show(String.Format(ErrorMessages.fileNotFound, ""), "Error", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
                     worker.ReportProgress(0);
-                    if (result.Equals(DialogResult.No)) {e.Cancel = true; break;}
-                    continue;
-                }
-                string sourcePath = files[i];
-
-                //change Annot colors
-                string destPath = generateTempFileName(sourcePath, ckbx_createNewNames.Checked, i);
-                bool colorChangeComplete = changeColorOfAnnotsByColor(sourcePath, destPath, Color.Red, Color.Black);
-
-                //handle errors
-                if (!colorChangeComplete)
-                {
-                    if (File.Exists(destPath)) { File.Delete(destPath); }
-                    DialogResult result = MessageBox.Show(String.Format(ErrorMessages.changingColors, ""), "Error", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
                     if (result.Equals(DialogResult.No)) { e.Cancel = true; break; }
                     continue;
                 }
-                cleanupFiles(sourcePath, destPath, ckbx_createNewNames.Checked);
+
+                // create working documents
+                string destPath = generateDestFile(sourcePath, i);
+                string tempDestPath = generateTempFileName(destPath);
+
+                //change Annot colors and handle errors
+                if (ckbx_blackenAnnots.Checked)
+                {
+                    bool colorChangeComplete = changeColorOfAnnotsByColor(destPath, tempDestPath, Color.Red, Color.Black);
+                    if (colorChangeComplete)
+                    {
+                        cleanupTempFiles(destPath, tempDestPath);
+                    }
+                    else
+                    {
+                        if (File.Exists(destPath)) { File.Delete(destPath); }
+                        if (File.Exists(tempDestPath)) { File.Delete(tempDestPath); }
+                        DialogResult result = MessageBox.Show(String.Format(ErrorMessages.changingColors, ""), "Error", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                        if (result.Equals(DialogResult.No)) { e.Cancel = true; break; }
+                        continue;
+                    }
+                }
 
                 //add revision title block
-                if (ckbc_revisionBlock.Checked)
+                if (ckbc_addRevisionBlock.Checked)
                 {
-                    //check which filename was used
-                    string tempPath = "";
-                    if (ckbx_createNewNames.Checked)
-                    {tempPath = generateTempFileName(destPath, false, i);}
-                    else
-                    {tempPath = generateTempFileName(sourcePath, false, i);}
-
                     string revision = destPath.Substring(destPath.LastIndexOf('.') - 4, 4);
-                    bool revTitleAdded = addRevisionTitleblock(destPath, tempPath, revision, tb_author.Text);
-
-                    // handle errors
-                    if (!revTitleAdded)
+                    bool revTitleAdded = addRevisionTitleblock(destPath, tempDestPath, revision, tb_author.Text, tb_checker.Text);
+                    if (revTitleAdded)
                     {
-                        if (File.Exists(tempPath)) { File.Delete(tempPath); }
+                        cleanupTempFiles(destPath, tempDestPath);
+                    }
+                    else
+                    {
+                        if (File.Exists(tempDestPath)) { File.Delete(tempDestPath); }
                         DialogResult result = MessageBox.Show(String.Format(ErrorMessages.addingRevisionBlock, ""), "Error", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
                         if (result.Equals(DialogResult.No)) { e.Cancel = true; break; }
                         continue;
                     }
-                    cleanupFiles(destPath, tempPath, false);
+                }
+
+                //delete old files if requested
+                if (ckbx_deleteOldFile.Checked)
+                {
+                    File.Delete(sourcePath);
                 }
             }
         }
@@ -136,7 +145,7 @@ namespace JDO_DT_PdfTools
             if (e.Cancelled) { _updateProgressbar(0); return; }
 
             //else wait for explorer to update and finalise
-            Thread.Sleep(500);
+            Thread.Sleep(1000);
             _finaliseProgressbar();
         }
 
@@ -160,7 +169,7 @@ namespace JDO_DT_PdfTools
             }
             return true;
         }
-        private void _setupProgressbar ()
+        private void _setupProgressbar()
         {
             progressBar1.Maximum = 100;
             progressBar1.Step = 1;
@@ -206,42 +215,38 @@ namespace JDO_DT_PdfTools
             }
             return null;
         }
-        private static void cleanupFiles(string originalFile, string tempFile, bool keepNewName)
+        private static void cleanupTempFiles(string destinationFile, string tempFile)
         {
-            //replace or delete files
-            if (keepNewName)
-            {
-                File.Delete(originalFile);
-            }
-            else
-            {
-                File.Delete(originalFile);
-                File.Move(tempFile, originalFile);
-            }
+            //delete destinaton file
+            File.Delete(destinationFile);
+            //replace files
+            File.Move(tempFile, destinationFile);
         }
-        private static string generateTempFileName(string sourcePath, bool createNewName, int fileIndex)
+        private static string generateDestFile(string sourcePath, int fileIndex)
         {
             //create temp drawing name for editing
             string sourceDir = Path.GetDirectoryName(sourcePath);
             string sourceFileName = Path.GetFileNameWithoutExtension(sourcePath);
-            string tempPath = Path.Combine(sourceDir, sourceFileName) + "(1).pdf";
 
-            // if user requests renaming the file generate new fileName
-            if (createNewName)
-            {
-                string sketch = String.Format("SKETCH {0,2:D2}", fileIndex + 1);
-                string name = sourceFileName.Substring(
-                    sourceFileName.IndexOf("HPC"),
-                    sourceFileName.LastIndexOf("-") - sourceFileName.IndexOf("HPC"));
-                string rev = getNextRevisionFromDocument(sourcePath);
-                tempPath = String.Format("{0}\\{1} {2}-{3}.pdf", sourceDir, sketch, name, rev);
-            }
+            string sketch = String.Format("SKETCH {0,2:D2}", fileIndex + 1);
+            string name = sourceFileName.Substring(
+                sourceFileName.IndexOf("HPC"),
+                sourceFileName.LastIndexOf("-") - sourceFileName.IndexOf("HPC"));
+            string rev = getNextRevisionFromAnnotations(sourcePath);
+            string destPath = String.Format("{0}\\{1} {2}-{3}.pdf", sourceDir, sketch, name, rev);
 
             //generate stream
-            FileInfo fileInfo = new FileInfo(tempPath);
-            fileInfo.Directory.Create();
-            File.Copy(sourcePath, tempPath);
+            File.Copy(sourcePath, destPath);
             
+            return destPath;
+        }
+        private static string generateTempFileName(string destPath)
+        {
+            //create temp drawing name for editing
+            string sourceDir = Path.GetDirectoryName(destPath);
+            string sourceFileName = Path.GetFileNameWithoutExtension(destPath);
+            string tempPath = Path.Combine(sourceDir, sourceFileName) + "(1).pdf";
+
             return tempPath;
         }
     }
